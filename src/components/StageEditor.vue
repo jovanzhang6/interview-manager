@@ -109,7 +109,7 @@ watch(entries, value => {
 // ===== 指针拖拽：行实体跟手，原位显示占位槽，其余行平滑让位 =====
 interface DragState {
   key: number; from: number; to: number;
-  rowEl: HTMLElement;
+  rowEl: HTMLElement; rowLeft: number;
   pointerId: number; startX: number; startY: number;
   grabDX: number; grabDY: number;
   width: number; height: number;
@@ -135,6 +135,7 @@ function onDragPointerDown(key: number, event: PointerEvent) {
     key,
     from: entries.value.findIndex(entry => entry.key === key),
     rowEl,
+    rowLeft: rect.left,
     to: -1,
     pointerId: event.pointerId,
     startX: event.clientX,
@@ -161,8 +162,10 @@ d.active = true;
   clone.classList.remove('drag-ghost');
   clone.style.width = `${d.width}px`;
   clone.style.height = `${d.height}px`;
-  clone.style.left = `${event.clientX - d.grabDX}px`;
-  clone.style.top = `${event.clientY - d.grabDY}px`;
+  // 横向锁定在列表原位，只允许纵向拖动；用合成器属性定位避免逐帧布局
+  clone.style.left = `${d.rowLeft}px`;
+  clone.style.top = '0px';
+  clone.style.transform = `translate3d(0, ${event.clientY - d.grabDY}px, 0)`;
   document.body.appendChild(clone);
   d.clone = clone;
   d.rowEl.classList.add('drag-ghost');
@@ -177,9 +180,12 @@ if (!d || event.pointerId !== d.pointerId) return;
     if (Math.hypot(event.clientX - d.startX, event.clientY - d.startY) < 5) return;
     activateDrag(d, event);
   }
-  if (d.clone) {
-    d.clone.style.left = `${event.clientX - d.grabDX}px`;
-    d.clone.style.top = `${event.clientY - d.grabDY}px`;
+  if (d.clone && listEl.value) {
+    const listRect = listEl.value.getBoundingClientRect();
+    const minY = listRect.top + 4;
+    const maxY = listRect.bottom - d.height - 4;
+    const y = Math.min(maxY, Math.max(minY, event.clientY - d.grabDY));
+    d.clone.style.transform = `translate3d(0, ${y}px, 0)`;
   }
   // 计算落点并让其他行平滑让位
   const rows = entries.value.map(entry => {
@@ -393,6 +399,7 @@ h4 span {
   background: var(--stage-bg);
   box-shadow: var(--shadow-sm);
   transition: transform 160ms var(--ease-out), border-color var(--duration-fast), box-shadow 160ms var(--ease-out);
+  will-change: transform;
 }
 
 /* 被拖行的原位占位槽：虚线框提示落点区域 */
@@ -405,7 +412,7 @@ h4 span {
 
 .stage-row.drag-ghost > * { visibility: hidden; }
 
-/* 跟手的行实体：微倾斜加投影，营造拿起的感觉；层级压过弹窗（1000）与轻提示（2000） */
+/* 跟手的行实体：轻微上浮投影；层级压过弹窗（1000）与轻提示（2000） */
 .stage-clone {
   position: fixed;
   z-index: 4000;
@@ -418,8 +425,8 @@ h4 span {
   border-left: 3px solid var(--stage-color);
   border-radius: var(--radius-md);
   background: var(--color-surface-solid);
-  box-shadow: 0 16px 40px rgba(28, 25, 23, 0.30), 0 2px 8px rgba(28, 25, 23, 0.18);
-  transform: rotate(1.2deg) scale(1.01);
+  box-shadow: 0 8px 24px rgba(28, 25, 23, 0.22);
+  will-change: transform;
   pointer-events: none;
   cursor: grabbing;
 }
