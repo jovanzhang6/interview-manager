@@ -450,11 +450,10 @@ h4 span {
   transition: transform 160ms var(--ease-out), border-color var(--duration-fast), box-shadow 160ms var(--ease-out);
 }
 
-/* 被拖行的原位占位槽：虚线框提示落点区域 */
+/* 被拖行的原位只留一段空白占位（让位依据），不再画虚线框 */
 .stage-row.drag-ghost {
-  border-style: dashed;
-  border-color: var(--color-accent);
-  background: var(--color-accent-soft);
+  border-color: transparent;
+  background: transparent;
   box-shadow: none;
 }
 
