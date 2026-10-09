@@ -182,23 +182,30 @@ if (!d || event.pointerId !== d.pointerId) return;
     if (Math.hypot(event.clientX - d.startX, event.clientY - d.startY) < 5) return;
     activateDrag(d, event);
   }
-  if (d.clone && listEl.value) {
-    const listRect = listEl.value.getBoundingClientRect();
-    const minY = listRect.top + 4;
-    const maxY = listRect.bottom - d.height - 4;
+  if (d.clone && d.scrollContainer) {
+    // 以固定的滚动容器为基准钳制，克隆始终在弹窗可视区内（列表会随滚动移动，不能作基准）
+    const containerRect = d.scrollContainer.getBoundingClientRect();
+    const minY = containerRect.top + 8;
+    const maxY = containerRect.bottom - d.height - 8;
     const y = Math.min(maxY, Math.max(minY, event.clientY - d.grabDY));
     d.clone.style.transform = `translate3d(0, ${y}px, 0)`;
   }
   // 计算落点并让其他行平滑让位
+  recalcDropTarget(d, event.clientY);
+  autoScrollNearEdge(d, event.clientY);
+}
+
+// 按指针（或滚动后的行位置）重算插入点并让其他行让位；指针停住时由滚动循环驱动
+function recalcDropTarget(d: DragState, clientY: number) {
   const rows = entries.value.map(entry => {
     const el = rowEls.get(entry.key)!;
     const r = el.getBoundingClientRect();
     return { top: r.top, height: r.height };
   });
-  const to = computeDropIndex(event.clientY, rows, d.from);
+  const to = computeDropIndex(clientY, rows, d.from);
   // 滞后带：两次落点切换之间指针至少移动 12px，避免指针在行中点附近抖动时让位行反复横跳
-  if (to !== d.to && Math.abs(event.clientY - d.lastSwitchY) > 12) {
-    d.lastSwitchY = event.clientY;
+  if (to !== d.to && Math.abs(clientY - d.lastSwitchY) > 12) {
+    d.lastSwitchY = clientY;
     d.to = to;
     const shifts = computeShifts(d.from, to, entries.value.length, d.height + SLOT_GAP);
     entries.value.forEach((entry, i) => {
@@ -206,7 +213,6 @@ if (!d || event.pointerId !== d.pointerId) return;
       if (el) el.style.transform = shifts[i] ? `translateY(${shifts[i]}px)` : '';
     });
   }
-  autoScrollNearEdge(event.clientY);
 }
 
 let scrollFrame = 0;
@@ -234,7 +240,7 @@ function autoScrollNearEdge(d: DragState, clientY: number) {
 }
 
 function onDragPointerUp(event: PointerEvent) {
-const d = drag.value;
+  const d = drag.value;
   if (!d || event.pointerId !== d.pointerId) return;
   finishDrag(d);
 }
