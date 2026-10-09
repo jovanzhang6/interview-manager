@@ -116,6 +116,7 @@ interface DragState {
   active: boolean;
   clone: HTMLElement | null;
   scrollContainer: HTMLElement | null;
+  lastSwitchY: number;
 }
 const drag = ref<DragState | null>(null);
 const rowEls = new Map<number, HTMLElement>();
@@ -146,7 +147,8 @@ function onDragPointerDown(key: number, event: PointerEvent) {
     height: rect.height,
     active: false,
     clone: null,
-    scrollContainer: rowEl.closest('.record-modal-body')
+    scrollContainer: rowEl.closest('.record-modal-body'),
+    lastSwitchY: -Infinity
   };
   window.addEventListener('pointermove', onDragPointerMove);
   window.addEventListener('pointerup', onDragPointerUp);
@@ -194,7 +196,9 @@ if (!d || event.pointerId !== d.pointerId) return;
     return { top: r.top, height: r.height };
   });
   const to = computeDropIndex(event.clientY, rows, d.from);
-  if (to !== d.to) {
+  // 滞后带：两次落点切换之间指针至少移动 12px，避免指针在行中点附近抖动时让位行反复横跳
+  if (to !== d.to && Math.abs(event.clientY - d.lastSwitchY) > 12) {
+    d.lastSwitchY = event.clientY;
     d.to = to;
     const shifts = computeShifts(d.from, to, entries.value.length, d.height + SLOT_GAP);
     entries.value.forEach((entry, i) => {
@@ -429,6 +433,8 @@ h4 span {
   will-change: transform;
   pointer-events: none;
   cursor: grabbing;
+  /* 继承自 .stage-row 的 transform 过渡会让跟手移动迟滞（表现为惯性），必须禁用 */
+  transition: none;
 }
 
 .stage-clone .stage-number { font-family: var(--font-mono); font-size: 12px; text-align: center; }
