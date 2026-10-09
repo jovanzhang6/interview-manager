@@ -525,6 +525,106 @@ describe('自定义面试流程', () => {
     });
   }
 
+  async function editStages(id: string, stages: unknown, position = '自定义岗位') {
+    return fetch(`${baseURL}/api/interviews/${id}`, {
+      method: 'PATCH', headers: auth(token), body: JSON.stringify({ company: '独立流程公司', position, stages })
+    });
+  }
+
+  it('编辑删光全部历史阶段后，流程以全新状态重新接续', async () => {
+    const item = (await (await createCustom([
+      { name: '提交申请', type: 'application' }, { name: '专业面谈', type: 'interview' }
+    ])).json()) as any;
+    expect((await setStage(item.id, 0, 'pass')).status).toBe(200);
+    // 全删后添加一个全新阶段（新标识，与历史无关联）
+    const response = await editStages(item.id, [{ id: 'fresh-uuid-1', name: '重新开始', type: 'interview' }]);
+    expect(response.status).toBe(200);
+    const updated = (await response.json()) as any;
+    expect(updated.stages).toEqual([{ id: 'fresh-uuid-1', name: '重新开始', type: 'interview', status: 'current' }]);
+  });
+
+  it('编辑删除录用阶段后封存解除，时间线恢复可操作', async () => {
+    const item = (await (await createCustom([
+      { name: '提交申请', type: 'application' }, { name: '录用通知', type: 'offer' }
+    ])).json()) as any;
+    expect((await setStage(item.id, 0, 'pass')).status).toBe(200);
+    expect((await setStage(item.id, 1, 'pass')).status).toBe(200);
+    // 已录用封存
+    expect((await setStage(item.id, 0, 'current')).status).toBe(400);
+    // 删除录用阶段后封存解除
+    const response = await editStages(item.id, [{ id: item.stages[0].id, name: '提交申请', type: 'application' }]);
+    expect(response.status).toBe(200);
+    const resumed = await setStage(item.id, 0, 'current');
+    expect(resumed.status).toBe(200);
+    expect(((await resumed.json()) as any).stages.map((stage: any) => stage.status)).toEqual(['current']);
+  });
+
+  it('编辑产生的历史阶段重排后，待进行阶段不可跳过操作且冻结可翻案', async () => {
+    const item = (await (await createCustom([
+      { name: '提交申请', type: 'application' }, { name: '一面', type: 'interview' }, { name: '二面', type: 'interview' }
+    ])).json()) as any;
+    expect((await setStage(item.id, 0, 'pass')).status).toBe(200);
+    expect((await setStage(item.id, 1, 'fail')).status).toBe(200);
+    // 把失败的一面拖到末尾
+    const response = await editStages(item.id, [
+      { id: item.stages[0].id, name: '提交申请', type: 'application' },
+      { id: item.stages[2].id, name: '二面', type: 'interview' },
+      { id: item.stages[1].id, name: '一面', type: 'interview' }
+    ]);
+    expect(response.status).toBe(200);
+    const reordered = (await response.json()) as any;
+    expect(reordered.stages.map((stage: any) => stage.status)).toEqual(['pass', 'pending', 'fail']);
+    // 排在前面的待进行二面不可跳过直接操作
+    expect((await setStage(item.id, 1, 'pass')).status).toBe(400);
+    // 末尾冻结的一翻案为通过，二面接续为进行中
+    const flipped = await setStage(item.id, 2, 'pass');
+    expect(flipped.status).toBe(200);
+    expect(((await flipped.json()) as any).stages.map((stage: any) => stage.status)).toEqual(['pass', 'current', 'pass']);
+  });
+
+  it('导入已录用的流程后时间线同样封存', async () => {
+    const res = await fetch(`${baseURL}/api/interviews/import`, {
+      method: 'POST', headers: auth(token), body: JSON.stringify({
+        mode: 'append', data: [{
+          company: '独立流程公司', position: '导入录用岗',
+          stages: [
+            { name: '投递', type: 'application', status: 'pass' },
+            { name: '录用', type: 'offer', status: 'pass' }
+          ]
+        }]
+      })
+    });
+    expect(res.status).toBe(200);
+    const list = (await (await fetch(`${baseURL}/api/interviews`, { headers: auth(token) })).json()) as any[];
+    const imported = list.find(record => record.position === '导入录用岗');
+    const blocked = await setStage(imported.id, 0, 'current');
+    expect(blocked.status).toBe(400);
+    expect((await blocked.json() as any).error).toContain('封存');
+  });
+
+  it('编辑改名进行中的阶段后状态保持不变', async () => {
+    const item = (await (await createCustom([{ name: '技术交流', type: 'interview' }])).json()) as any;
+    const response = await editStages(item.id, [{ id: item.stages[0].id, name: '终面', type: 'interview' }], '改名岗位');
+    expect(response.status).toBe(200);
+    const updated = (await response.json()) as any;
+    expect(updated.stages[0]).toMatchObject({ name: '终面', status: 'current' });
+  });
+
+  it('三十阶段流程的末位节点可正常更正', async () => {
+    const item = (await (await createCustom(
+      Array.from({ length: 30 }, (_, i) => ({ name: `第${i + 1}步`, type: 'interview' }))
+    )).json()) as any;
+    for (let i = 0; i < 29; i++) {
+      expect((await setStage(item.id, i, 'pass')).status).toBe(200);
+    }
+    const last = await setStage(item.id, 29, 'fail');
+    expect(last.status).toBe(200);
+    expect(((await last.json()) as any).stages[29].status).toBe('fail');
+    const revived = await setStage(item.id, 29, 'pass');
+    expect(revived.status).toBe(200);
+    expect(((await revived.json()) as any).stages).toHaveLength(30);
+  });
+
   it('同公司不同岗位保存各自流程，后续新增仍使用默认十阶段', async () => {
     const definitions = [
       { name: ' 提交申请 ', type: 'application', status: 'pending' },
