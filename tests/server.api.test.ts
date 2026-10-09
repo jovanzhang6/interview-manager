@@ -191,14 +191,17 @@ describe('面试记录 CRUD', () => {
     expect(body.lastVisitedAt).toBeUndefined();
   });
 
-  it('已通过的历史阶段不允许操作，返回校验错误', async () => {
+  it('已通过阶段重复设置按幂等处理，状态与更新时间均不变', async () => {
     const list = (await (await fetch(`${baseURL}/api/interviews`, { headers: auth(token) })).json()) as any[];
     const res = await fetch(`${baseURL}/api/interviews/${list[0].id}/stage`, {
       method: 'PATCH',
       headers: auth(token),
       body: JSON.stringify({ stageIndex: 0, status: 'pass' })
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.stages).toEqual(list[0].stages);
+    expect(body.updatedAt).toBe(list[0].updatedAt);
   });
 
   it('非法状态值与非法阶段索引返回 400', async () => {
@@ -634,11 +637,79 @@ describe('自定义面试流程', () => {
         const response = await setStage(item.id, 0, correctedStatus);
         expect(response.status).toBe(200);
         expect(((await response.json()) as any).stages.map((stage: any) => stage.status)).toEqual([correctedStatus]);
-        if (correctedStatus !== 'current') {
-          expect((await setStage(item.id, 0, 'fail')).status).toBe(400);
+        if (correctedStatus === 'current') {
+          // 恢复进行中后可以再次完成
+          expect((await setStage(item.id, 0, 'pass')).status).toBe(200);
+        } else {
+          // 已完成的结果也能翻案：更正为失败后流程冻结，不生成额外阶段
+          const flipped = await setStage(item.id, 0, 'fail');
+          expect(flipped.status).toBe(200);
+          expect(((await flipped.json()) as any).stages.map((stage: any) => stage.status)).toEqual(['fail']);
         }
       }
     }
+  });
+
+  it('误点的通过可以撤回，被推进的阶段自动回退为待进行', async () => {
+    const item = (await (await createCustom([
+      { name: '提交申请', type: 'application' },
+      { name: '技术面谈', type: 'interview' },
+      { name: '人事面谈', type: 'interview' }
+    ])).json()) as any;
+    expect((await setStage(item.id, 1, 'pass')).status).toBe(200);
+    expect(((await (await fetch(`${baseURL}/api/interviews`, { headers: auth(token) })).json()).find((r: any) => r.id === item.id).stages.map((s: any) => s.status))).toEqual(['pass', 'pass', 'current']);
+    const resumed = await setStage(item.id, 1, 'current');
+    expect(resumed.status).toBe(200);
+    expect(((await resumed.json()) as any).stages.map((stage: any) => stage.status)).toEqual(['pass', 'current', 'pending']);
+  });
+
+  it('已通过和已跳过之间可以互换，不影响前后阶段', async () => {
+    for (const first of ['pass', 'skip']) {
+      const second = first === 'pass' ? 'skip' : 'pass';
+      const item = (await (await createCustom([
+        { name: '笔试', type: 'other' },
+        { name: '技术面谈', type: 'interview' },
+        { name: '人事面谈', type: 'interview' }
+      ])).json()) as any;
+      expect((await setStage(item.id, 0, first)).status).toBe(200);
+      expect((await setStage(item.id, 1, second)).status).toBe(200);
+      const swapped = await setStage(item.id, 0, second);
+      expect(swapped.status).toBe(200);
+      expect(((await swapped.json()) as any).stages.map((stage: any) => stage.status)).toEqual([second, second, 'current']);
+    }
+  });
+
+  it('更正中间阶段为未通过后流程冻结，后续已记录结果保留', async () => {
+    const item = (await (await createCustom([
+      { name: '提交申请', type: 'application' },
+      { name: '笔试', type: 'other' },
+      { name: '技术面谈', type: 'interview' },
+      { name: '人事面谈', type: 'interview' }
+    ])).json()) as any;
+    expect((await setStage(item.id, 1, 'pass')).status).toBe(200);
+    expect((await setStage(item.id, 2, 'pass')).status).toBe(200);
+    expect((await setStage(item.id, 3, 'skip')).status).toBe(200);
+    // 更正笔试为未通过：流程终结沉底，技术面谈（已通过）与人事面谈（已跳过）作为既成事实保留
+    const corrected = await setStage(item.id, 1, 'fail');
+    expect(corrected.status).toBe(200);
+    expect(((await corrected.json()) as any).stages.map((stage: any) => stage.status)).toEqual(['pass', 'fail', 'pass', 'skip']);
+  });
+
+  it('已录用的流程整体封存，任何阶段都不再接受更正', async () => {
+    const item = (await (await createCustom([
+      { name: '提交申请', type: 'application' },
+      { name: '技术面谈', type: 'interview' },
+      { name: '录用通知', type: 'offer' }
+    ])).json()) as any;
+    expect((await setStage(item.id, 1, 'pass')).status).toBe(200);
+    expect((await setStage(item.id, 2, 'pass')).status).toBe(200);
+    for (const [index, status] of [[0, 'current'], [0, 'skip'], [1, 'fail'], [2, 'current']] as const) {
+      const res = await setStage(item.id, index, status);
+      expect(res.status).toBe(400);
+      expect((await res.json() as any).error).toContain('封存');
+    }
+    const list = (await (await fetch(`${baseURL}/api/interviews`, { headers: auth(token) })).json()) as any[];
+    expect(list.find((r: any) => r.id === item.id).stages.map((s: any) => s.status)).toEqual(['pass', 'pass', 'pass']);
   });
 
   it('按实际流程长度拒绝越界和非整数索引，拒绝回写待进行状态', async () => {
@@ -653,7 +724,8 @@ describe('自定义面试流程', () => {
       const response = await fetch(`${baseURL}/api/interviews/${item.id}/stage`, {
         method: 'PATCH', headers: auth(token), body: JSON.stringify({ stageIndex: 0, status })
       });
-      expect(response.status).toBe(400);
+      // 待进行不可回写；进行中重复设置按幂等成功处理
+      expect(response.status).toBe(status === 'pending' ? 400 : 200);
     }
   });
 

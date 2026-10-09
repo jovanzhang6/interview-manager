@@ -124,7 +124,7 @@
                 v-for="(stage, i) in item.stages"
                 :key="stage.id || i"
                 class="timeline-node"
-                :class="[`status-${stage.status}`, { clickable: isStageActionable(stage) }]"
+                :class="[`status-${stage.status}`, { clickable: stage.status !== 'pending' }]"
                 @click="openStageMenu(item.id, i, $event)"
               >
                 <div class="node-dot"></div>
@@ -194,10 +194,10 @@
 
     <div v-if="stageMenu.visible" class="stage-menu" :style="{ top: stageMenu.y + 'px', left: stageMenu.x + 'px' }">
       <button v-if="stageMenu.canResume" @click="updateStageStatus('current')">恢复进行中</button>
-      <button @click="updateStageStatus('pass')">通过</button>
-      <button @click="updateStageStatus('fail')">未通过</button>
-      <button @click="updateStageStatus('rejected')">已拒绝</button>
-      <button @click="updateStageStatus('skip')">跳过</button>
+      <button :disabled="stageMenu.status === 'pass'" @click="updateStageStatus('pass')">通过</button>
+      <button :disabled="stageMenu.status === 'fail'" @click="updateStageStatus('fail')">未通过</button>
+      <button :disabled="stageMenu.status === 'rejected'" @click="updateStageStatus('rejected')">已拒绝</button>
+      <button :disabled="stageMenu.status === 'skip'" @click="updateStageStatus('skip')">跳过</button>
     </div>
 
     <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.message }}</div>
@@ -207,14 +207,14 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import type { Interview, StageDraft } from '../types';
+import type { Interview, StageDraft, StageStatus } from '../types';
 import { fetchInterviews, createInterview, updateStage, deleteInterview, updateInterview, exportInterviews, importInterviews, visitCompany, pinCompany } from '../api';
 import { filterInterviews, groupByCompany, sortGroups, isInterviewTerminated, isGroupTerminated, type CompanyGroup, type SortMode } from '../utils/grouping';
 import StatsPanel from '../components/StatsPanel.vue';
 import EmptyState from '../components/EmptyState.vue';
 import ThemeToggle from '../components/ThemeToggle.vue';
 import StageEditor from '../components/StageEditor.vue';
-import { createDefaultStageDefinitions, getStageId, getStageType, isStageActionable, validateStageDefinitions } from '../stages';
+import { createDefaultStageDefinitions, getStageId, getStageType, hasOffer, validateStageDefinitions } from '../stages';
 
 const router = useRouter();
 const user = ref<any>(null);
@@ -235,7 +235,7 @@ const recordForm = ref<{ company: string; position: string; url: string; stages:
 const savingRecord = ref(false);
 const recordStageError = computed(() => validateStageDefinitions(recordForm.value.stages));
 
-const stageMenu = ref({ visible: false, x: 0, y: 0, interviewId: '', stageIndex: 0, canResume: false });
+const stageMenu = ref({ visible: false, x: 0, y: 0, interviewId: '', stageIndex: 0, canResume: false, status: 'current' as StageStatus });
 
 const toast = ref({ show: false, message: '', type: 'success' as 'success' | 'error' });
 
@@ -418,13 +418,15 @@ async function handleDelete() {
 }
 
 function openStageMenu(interviewId: string, stageIndex: number, event: MouseEvent) {
-  const stage = interviews.value.find(item => item.id === interviewId)?.stages[stageIndex];
-  if (!stage || !isStageActionable(stage)) return;
+  const interview = interviews.value.find(item => item.id === interviewId);
+  const stage = interview?.stages[stageIndex];
+  // 待进行阶段是"未来"不可干预；已录用的流程整体封存，重写走编辑面试记录。
+  if (!interview || !stage || stage.status === 'pending' || hasOffer(interview.stages)) return;
 
   // 阻止冒泡：否则同一点击会立即传到 document 上的关闭监听，菜单开了又关，表现为点击无效
   event.stopPropagation();
   const canResume = stage.status !== 'current';
-  // 失败或拒绝的节点多一项恢复操作，定位时计入增加的菜单高度。
+  // 恢复项让菜单多一行，定位时计入增加的高度。
   const MENU_H = canResume ? 210 : 170;
   const MENU_W = 110;
   const flipUp = event.clientY + MENU_H > window.innerHeight;
@@ -435,22 +437,26 @@ function openStageMenu(interviewId: string, stageIndex: number, event: MouseEven
     y: flipUp ? event.clientY - MENU_H : event.clientY,
     interviewId,
     stageIndex,
-    canResume
+    canResume,
+    status: stage.status
   };
 }
 
-async function updateStageStatus(status: string) {
+async function updateStageStatus(status: StageStatus) {
   const { interviewId, stageIndex } = stageMenu.value;
   stageMenu.value.visible = false;
+  await saveStageStatus(interviewId, stageIndex, status);
+}
 
+async function saveStageStatus(interviewId: string, stageIndex: number, status: StageStatus) {
   try {
     const updated = await updateStage(interviewId, stageIndex, status);
     const idx = interviews.value.findIndex(i => i.id === interviewId);
     // 字段合并而非整体替换：接口未返回的字段（如 url）保留原值，避免跳转链接失效
     if (idx !== -1) interviews.value[idx] = { ...interviews.value[idx], ...updated };
     showToast('状态已更新');
-  } catch {
-    showToast('更新失败', 'error');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '更新失败', 'error');
   }
 }
 
@@ -1347,7 +1353,12 @@ onUnmounted(() => {
   transition: background var(--duration-fast) var(--ease-out);
 }
 
-.stage-menu button:hover {
+.stage-menu button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.stage-menu button:not(:disabled):hover {
   background: var(--color-bg);
 }
 

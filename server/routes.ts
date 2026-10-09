@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase } from './database';
 import { authMiddleware, adminMiddleware, AuthRequest } from './middleware';
-import { createDefaultStageDefinitions, createStages, getStageId, getStageType, isStageActionable, mergeStageDefinitions, validateStageDefinitions, type Stage, type StageDefinition } from '../src/stages';
+import { createDefaultStageDefinitions, createStages, getStageId, getStageType, hasOffer, mergeStageDefinitions, validateStageDefinitions, type Stage, type StageDefinition } from '../src/stages';
 
 const router = Router();
 router.use(authMiddleware);
@@ -290,22 +290,48 @@ router.patch('/:id/stage', (req: AuthRequest, res) => {
       return res.status(400).json({ error: '阶段索引无效' });
     }
     
-    if (!isStageActionable(stages[stageIndex])) {
-      return res.status(400).json({ error: '只能操作进行中、未通过或已拒绝的阶段' });
+    // 待进行阶段是"未来"，不可直接操作；已记录的状态一律允许更正，误点都可回退。
+    if (stages[stageIndex].status === 'pending') {
+      return res.status(400).json({ error: '待进行阶段不能操作' });
     }
 
-    // 恢复进行中只用于撤销失败或拒绝的误操作。
-    if (status === 'current' && stages[stageIndex].status === 'current') {
-      return res.status(400).json({ error: '只有未通过或已拒绝的阶段可以恢复进行中' });
+    // 重复设置按幂等处理：不变更、不刷新更新时间。
+    if (stages[stageIndex].status === status) {
+      return res.json({
+        id,
+        company: row.company,
+        position: row.position,
+        stages,
+        status: row.status,
+        url: row.url || undefined,
+        lastVisitedAt: row.last_visited_at || undefined,
+        pinned: !!row.pinned,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      });
     }
-    
+
+    // 已通过的录用阶段是事实闭环：整条时间线封存，重写请走编辑面试记录。
+    if (hasOffer(stages)) {
+      return res.status(400).json({ error: '该流程已录用并封存，如需调整请编辑面试记录' });
+    }
+
     stages[stageIndex].status = status;
-    
-    if ((status === 'pass' || status === 'skip') && !stages.some(stage => ['current', 'fail', 'rejected'].includes(stage.status))) {
-      // 阶段可以自由重排，结果更正后也要接续排在前面的待进行阶段。
-      const nextPending = stages.findIndex(stage => stage.status === 'pending');
-      if (nextPending !== -1) {
-        stages[nextPending].status = 'current';
+
+    if (status === 'pass' || status === 'skip') {
+      // 通过或跳过后接续排在前面的待进行阶段；已存在失败/拒绝则流程保持终结。
+      if (!stages.some(stage => ['current', 'fail', 'rejected'].includes(stage.status))) {
+        const nextPending = stages.findIndex(stage => stage.status === 'pending');
+        if (nextPending !== -1) {
+          stages[nextPending].status = 'current';
+        }
+      }
+    } else {
+      // 恢复进行中或改判失败/拒绝时，回收因先前推进产生的其他进行中阶段，保证至多一个进行中。
+      for (let i = 0; i < stages.length; i++) {
+        if (i !== stageIndex && stages[i].status === 'current') {
+          stages[i].status = 'pending';
+        }
       }
     }
     
