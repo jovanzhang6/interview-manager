@@ -243,17 +243,62 @@ function finishDrag(d: DragState, cancelled = false) {
   cancelAnimationFrame(scrollFrame);
   d.clone?.remove();
   document.body.classList.remove('dragging-stages');
+
+  if (cancelled || !d.active || d.to === -1 || d.to === d.from) {
+    entries.value.forEach(entry => {
+      const el = rowEls.get(entry.key);
+      if (el) el.style.transform = '';
+    });
+    d.rowEl.classList.remove('drag-ghost');
+    if (cancelled) announcement.value = '已取消拖动';
+    drag.value = null;
+    return;
+  }
+
+  // FLIP 落位：冻结拖拽中的视觉位置，重排后让每行从旧视觉位置平滑滑入新槽位。
+  // 若先清让位位移再重排，两步之间隔一个渲染帧，让位行会先弹回原位再瞬移（下坠-回弹感）。
+  const firstTop = new Map<number, number>();
   entries.value.forEach(entry => {
     const el = rowEls.get(entry.key);
-    if (el) el.style.transform = '';
+    if (el) firstTop.set(entry.key, el.getBoundingClientRect().top);
   });
-  d.rowEl.classList.remove('drag-ghost');
-  if (!cancelled && d.active && d.to !== -1 && d.to !== d.from) {
-    moveStage(d.from, d.to);
-  } else if (cancelled) {
-    announcement.value = '已取消拖动';
-  }
+  const { from, to } = d;
   drag.value = null;
+  moveStage(from, to);
+  nextTick().then(() => {
+    if (!rowEls.size) return;
+    // 关闭过渡把所有行归零到新自然位置，记录与拖拽时视觉位置的差值
+    entries.value.forEach(entry => {
+      const el = rowEls.get(entry.key);
+      if (el) {
+        el.style.transition = 'none';
+        el.style.transform = '';
+      }
+    });
+    void document.body.offsetHeight;
+    const deltas = new Map<number, number>();
+    entries.value.forEach(entry => {
+      const el = rowEls.get(entry.key);
+      if (el && firstTop.has(entry.key)) {
+        deltas.set(entry.key, firstTop.get(entry.key)! - el.getBoundingClientRect().top);
+      }
+    });
+    // 反向偏移到拖拽时的视觉位置，再过渡滑入最终槽位
+    entries.value.forEach(entry => {
+      const el = rowEls.get(entry.key);
+      const delta = deltas.get(entry.key);
+      if (el) el.style.transform = delta ? `translateY(${delta}px)` : '';
+    });
+    void document.body.offsetHeight;
+    entries.value.forEach(entry => {
+      const el = rowEls.get(entry.key);
+      if (el) {
+        el.style.transition = '';
+        el.style.transform = '';
+      }
+    });
+    d.rowEl.classList.remove('drag-ghost');
+  });
 }
 
 onUnmounted(() => {
@@ -403,7 +448,6 @@ h4 span {
   background: var(--stage-bg);
   box-shadow: var(--shadow-sm);
   transition: transform 160ms var(--ease-out), border-color var(--duration-fast), box-shadow 160ms var(--ease-out);
-  will-change: transform;
 }
 
 /* 被拖行的原位占位槽：虚线框提示落点区域 */
@@ -439,8 +483,8 @@ h4 span {
 
 .stage-clone .stage-number { font-family: var(--font-mono); font-size: 12px; text-align: center; }
 
-body.dragging-stages { user-select: none; }
-body.dragging-stages * { cursor: grabbing !important; }
+body.dragging-stages { user-select: none; cursor: grabbing; }
+body.dragging-stages .drag-handle { cursor: grabbing; }
 
 .drag-handle {
   display: flex;
