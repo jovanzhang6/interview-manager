@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase } from './database';
 import { authMiddleware, adminMiddleware, AuthRequest } from './middleware';
+import { createDefaultStageDefinitions, createStages, getStageId, getStageType, isStageActionable, mergeStageDefinitions, validateStageDefinitions, type Stage, type StageDefinition } from '../src/stages';
 
 const router = Router();
 router.use(authMiddleware);
@@ -10,11 +11,6 @@ const MAX_COMPANY_LEN = 100;
 const MAX_POSITION_LEN = 100;
 const VALID_STATUSES = ['pending', 'current', 'pass', 'fail', 'rejected', 'skip'];
 const VALID_STATUS_SET = new Set<string>(VALID_STATUSES);
-
-const STAGE_NAMES = [
-  '投递', '测评', '笔试', '简历评估', '一面',
-  '二面', '三面', 'HR面', 'Offer评估', '正式offer'
-];
 
 function sanitize(str: unknown): string | null {
   if (typeof str !== 'string') return null;
@@ -92,7 +88,7 @@ router.get('/export', (req: AuthRequest, res) => {
 // POST /api/interviews
 router.post('/', (req: AuthRequest, res) => {
   try {
-    const { company: rawCompany, position: rawPosition, url: rawUrl } = req.body;
+    const { company: rawCompany, position: rawPosition, url: rawUrl, stages: rawStages } = req.body;
     const company = sanitize(rawCompany);
     const position = typeof rawPosition === 'string' ? rawPosition.trim() : '';
     const url = typeof rawUrl === 'string' ? rawUrl.trim() : '';
@@ -104,13 +100,14 @@ router.post('/', (req: AuthRequest, res) => {
       return res.status(400).json({ error: '职位名称不能为空或超过100字符' });
     }
     
+    const definitions = rawStages === undefined ? createDefaultStageDefinitions() : rawStages;
+    const stageError = validateStageDefinitions(definitions);
+    if (stageError) return res.status(400).json({ error: stageError });
+
     const now = new Date().toISOString();
     const id = uuidv4();
-    // 投递无门槛：创建即视为投递已通过，第二阶段（测评）为当前进行中的阶段
-    const stages = STAGE_NAMES.map((name, i) => ({
-      name,
-      status: (i === 0 ? 'pass' : i === 1 ? 'current' : 'pending')
-    }));
+    // 客户端只配置流程，初始进度统一由服务端生成。
+    const stages = createStages(definitions as StageDefinition[]).map(stage => ({ ...stage, id: uuidv4() }));
     
     const db = getDatabase();
     db.prepare(`
@@ -147,9 +144,11 @@ router.post('/import', (req: AuthRequest, res) => {
     for (const item of imported) {
       if (!item || typeof item !== 'object' ||
           typeof item.company !== 'string' || typeof item.position !== 'string' ||
-          !Array.isArray(item.stages) || item.stages.length !== 10) {
+          !Array.isArray(item.stages)) {
         return res.status(400).json({ error: '导入数据结构不完整' });
       }
+      const stageError = validateStageDefinitions(item.stages);
+      if (stageError) return res.status(400).json({ error: stageError });
       for (const s of item.stages) {
         if (!s || typeof s.name !== 'string' || !VALID_STATUS_SET.has(s.status)) {
           return res.status(400).json({ error: '导入数据包含无效的阶段状态' });
@@ -186,7 +185,12 @@ router.post('/import', (req: AuthRequest, res) => {
         req.user!.userId,
         item.company.trim(),
         item.position.trim(),
-        JSON.stringify(item.stages),
+        JSON.stringify(item.stages.map((stage: Stage, index: number) => ({
+          ...stage,
+          id: getStageId(stage, index),
+          name: stage.name.trim(),
+          type: getStageType(stage)
+        }))),
         item.status || 'active',
         item.pinned ? 1 : 0,
         item.createdAt || now,
@@ -208,7 +212,7 @@ router.post('/import', (req: AuthRequest, res) => {
 router.patch('/:id', (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
-    const { company: rawCompany, position: rawPosition, url: rawUrl } = req.body;
+    const { company: rawCompany, position: rawPosition, url: rawUrl, stages: rawStages } = req.body;
     const company = sanitize(rawCompany);
     const position = typeof rawPosition === 'string' ? rawPosition.trim() : '';
     const url = typeof rawUrl === 'string' ? rawUrl.trim() : '';
@@ -226,16 +230,26 @@ router.patch('/:id', (req: AuthRequest, res) => {
     if (!row) {
       return res.status(404).json({ error: '未找到该面试记录' });
     }
-    
+
+    let stages: Stage[] = JSON.parse(row.stages);
+    if (rawStages !== undefined) {
+      const stageError = validateStageDefinitions(rawStages);
+      if (stageError) return res.status(400).json({ error: stageError });
+      if (rawStages.some((stage: StageDefinition) => !stage.id)) {
+        return res.status(400).json({ error: '编辑流程时必须保留阶段标识' });
+      }
+      stages = mergeStageDefinitions(stages, rawStages);
+    }
+
     const now = new Date().toISOString();
-    db.prepare('UPDATE interviews SET company = ?, position = ?, url = ?, updated_at = ? WHERE id = ? AND user_id = ?')
-      .run(company, position, url || null, now, id, req.user!.userId);
+    db.prepare('UPDATE interviews SET company = ?, position = ?, url = ?, stages = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+      .run(company, position, url || null, JSON.stringify(stages), now, id, req.user!.userId);
     
     res.json({
       id,
       company,
       position,
-      stages: JSON.parse(row.stages),
+      stages,
       status: row.status,
       url: url || undefined,
       lastVisitedAt: row.last_visited_at || undefined,
@@ -255,11 +269,10 @@ router.patch('/:id/stage', (req: AuthRequest, res) => {
     const { id } = req.params;
     const { stageIndex, status } = req.body;
     
-    if (!Number.isInteger(stageIndex) || stageIndex < 0 || stageIndex > 9) {
+    if (!Number.isInteger(stageIndex) || stageIndex < 0) {
       return res.status(400).json({ error: '阶段索引无效' });
     }
     
-    // 更新只接受操作结果；导入仍使用包含待进行状态的完整集合。
     if (!['current', 'pass', 'fail', 'rejected', 'skip'].includes(status)) {
       return res.status(400).json({ error: '状态值无效' });
     }
@@ -271,33 +284,26 @@ router.patch('/:id/stage', (req: AuthRequest, res) => {
       return res.status(404).json({ error: '未找到该面试记录' });
     }
     
-    const stages = JSON.parse(row.stages);
+    const stages: Stage[] = JSON.parse(row.stages);
+
+    if (stageIndex >= stages.length) {
+      return res.status(400).json({ error: '阶段索引无效' });
+    }
     
-    const stage = stages[stageIndex];
-    if (!stage || !['current', 'pass', 'fail', 'rejected', 'skip'].includes(stage.status)) {
-      return res.status(400).json({ error: '待进行阶段不能直接修改' });
+    if (!isStageActionable(stages[stageIndex])) {
+      return res.status(400).json({ error: '只能操作进行中、未通过或已拒绝的阶段' });
     }
 
-    if (stage.status === status) {
-      return res.status(400).json({ error: '阶段已经处于该状态' });
+    // 恢复进行中只用于撤销失败或拒绝的误操作。
+    if (status === 'current' && stages[stageIndex].status === 'current') {
+      return res.status(400).json({ error: '只有未通过或已拒绝的阶段可以恢复进行中' });
     }
-
-    if (stage.status !== 'current') {
-      if (stages.slice(0, stageIndex).some((s: any) => ['current', 'fail', 'rejected'].includes(s.status))) {
-        return res.status(400).json({ error: '请先处理前面的进行中、未通过或已拒绝阶段' });
-      }
-
-      // 历史结果更正意味着从该节点重新接续，后续已记录的结果一并撤销。
-      for (let i = stageIndex + 1; i < stages.length; i++) {
-        stages[i].status = 'pending';
-      }
-    }
-
-    stage.status = status;
     
-    if ((status === 'pass' || status === 'skip') &&
-        !stages.some((s: any) => ['current', 'fail', 'rejected'].includes(s.status))) {
-      const nextPending = stages.findIndex((s: any, index: number) => index > stageIndex && s.status === 'pending');
+    stages[stageIndex].status = status;
+    
+    if ((status === 'pass' || status === 'skip') && !stages.some(stage => ['current', 'fail', 'rejected'].includes(stage.status))) {
+      // 阶段可以自由重排，结果更正后也要接续排在前面的待进行阶段。
+      const nextPending = stages.findIndex(stage => stage.status === 'pending');
       if (nextPending !== -1) {
         stages[nextPending].status = 'current';
       }

@@ -12,7 +12,7 @@
     <span class="stat-divider"></span>
     <div class="stat-item">
       <span class="stat-value success">{{ offerCount }}</span>
-      <span class="stat-label">Offer</span>
+      <span class="stat-label">已录用</span>
     </div>
     <span class="stat-divider"></span>
     <div class="stat-item">
@@ -35,6 +35,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { Interview } from '../types';
+import { hasOffer as stagesHaveOffer, hasEnteredInterview } from '../stages';
 
 const props = defineProps<{
   interviews: Interview[];
@@ -52,10 +53,9 @@ const activeCount = computed(() =>
   ).length
 );
 
-// Offer 数：最后一个阶段（正式offer）状态为 pass
+// 录用数量按阶段类别识别，避免把自定义流程的最后一次面试误计为录用。
 function hasOffer(i: Interview): boolean {
-  const last = i.stages[i.stages.length - 1];
-  return last?.status === 'pass';
+  return stagesHaveOffer(i.stages);
 }
 const offerCount = computed(() => props.interviews.filter(hasOffer).length);
 
@@ -74,11 +74,11 @@ const rejectedCount = computed(() =>
   props.interviews.filter(i => i.stages.some(s => s.status === 'rejected') && !hasOffer(i)).length
 );
 
-// 面试转化率：进入面试阶段（一面=索引4及以后有 pass/current）的占比
+// 面试转化率按面试类别识别，不依赖阶段在流程中的固定位置。
 const interviewRate = computed(() => {
   if (totalCount.value === 0) return '0';
   const entered = props.interviews.filter(i =>
-    i.stages.slice(4).some(s => s.status === 'pass' || s.status === 'current')
+    hasEnteredInterview(i.stages)
   ).length;
   return Math.round((entered / totalCount.value) * 100);
 });

@@ -1,4 +1,5 @@
 import type { Interview } from '../types';
+import { hasOffer, stageProgress } from '../stages';
 
 /** 公司聚合组：同一公司的多条记录（多部门/多岗位）归并为一组 */
 export interface CompanyGroup {
@@ -7,7 +8,7 @@ export interface CompanyGroup {
   items: Interview[];
   /** 公司置顶：组内任一记录置顶即整体置顶，固定排在最前不参与排序 */
   pinned: boolean;
-  /** 公司最大进度（未挂岗位的最大值，全挂时为组内真实最大值） */
+  /** 公司最大完成比例（未挂岗位的最大值，全挂时为组内真实最大值） */
   maxProgress: number;
   /** 组内最新投递时间 */
   latestCreatedAt: string;
@@ -18,14 +19,13 @@ export interface CompanyGroup {
 }
 
 function progressOf(item: Interview): number {
-  return item.stages.filter(s => s.status === 'pass' || s.status === 'skip').length;
+  return stageProgress(item.stages);
 }
 
-/** 记录是否已终结（"挂了"）：任一阶段 fail/rejected 且未拿到 offer。口径与统计面板一致 */
+/** 记录是否已终结：任一阶段未通过或已拒绝，且未拿到录用通知。 */
 export function isInterviewTerminated(item: Interview): boolean {
-  const hasOffer = item.stages[item.stages.length - 1]?.status === 'pass';
   const killed = item.stages.some(s => s.status === 'fail' || s.status === 'rejected');
-  return killed && !hasOffer;
+  return killed && !hasOffer(item.stages);
 }
 
 /** 组内岗位排序：未终结的按进度降序在前（同进度新的在前），已终结的沉到最后（之间按投递时间新→旧） */

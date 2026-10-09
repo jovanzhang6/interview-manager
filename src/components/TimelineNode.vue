@@ -1,13 +1,13 @@
 <template>
-  <div class="timeline-node" :class="{ interactive: stage.status === 'current' }">
+  <div class="timeline-node" :class="{ interactive }">
     <div
       class="node-circle"
       :class="stage.status"
       @click="handleClick"
       @keydown="onKeydown"
-      :role="stage.status === 'current' ? 'button' : undefined"
-      :tabindex="stage.status === 'current' ? 0 : undefined"
-      :aria-label="stage.status === 'current' ? `设置「${stage.name}」阶段状态` : undefined"
+      :role="interactive ? 'button' : undefined"
+      :tabindex="interactive ? 0 : undefined"
+      :aria-label="interactive ? `设置「${stage.name}」阶段状态` : undefined"
       :ref="(el) => { if (el) nodeEl = el as HTMLElement }"
     >
       <span v-if="stage.status === 'pass'" class="node-icon">✓</span>
@@ -27,8 +27,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import type { Stage } from '../types';
+import { isStageActionable } from '../stages';
 
 const props = defineProps<{
   stage: Stage;
@@ -42,15 +43,16 @@ const emit = defineEmits<{
 }>();
 
 const nodeEl = ref<HTMLElement | null>(null);
+const interactive = computed(() => isStageActionable(props.stage));
 
 function handleClick() {
-  if (props.stage.status === 'current' && nodeEl.value) {
+  if (interactive.value && nodeEl.value) {
     emit('click', props.index, nodeEl.value);
   }
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (props.stage.status !== 'current') return;
+  if (!interactive.value) return;
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault();
     if (nodeEl.value) emit('click', props.index, nodeEl.value);

@@ -1,16 +1,7 @@
-export const STAGE_NAMES = [
-  '投递', '测评', '笔试', '简历评估', '一面',
-  '二面', '三面', 'HR面', 'Offer评估', '正式offer'
-] as const;
+import type { Stage } from './stages';
 
-export type StageName = typeof STAGE_NAMES[number];
-
-export type StageStatus = 'pending' | 'current' | 'pass' | 'fail' | 'rejected' | 'skip';
-
-export interface Stage {
-  name: StageName;
-  status: StageStatus;
-}
+export { STAGE_NAMES } from './stages';
+export type { Stage, StageName, StageStatus, StageType, StageDefinition, StageDraft } from './stages';
 
 export interface Interview {
   id: string;

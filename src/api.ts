@@ -1,4 +1,4 @@
-import type { Interview, User, AuthResponse } from './types';
+import type { Interview, User, AuthResponse, StageDefinition } from './types';
 
 const BASE = '/api';
 
@@ -71,10 +71,10 @@ export function fetchInterviews(): Promise<Interview[]> {
   return request<Interview[]>(`${BASE}/interviews`);
 }
 
-export function createInterview(company: string, position: string, url?: string): Promise<Interview> {
+export function createInterview(company: string, position: string, url?: string, stages?: StageDefinition[]): Promise<Interview> {
   return request<Interview>(`${BASE}/interviews`, {
     method: 'POST',
-    body: JSON.stringify({ company, position, url })
+    body: JSON.stringify({ company, position, url, stages })
   });
 }
 
@@ -109,10 +109,10 @@ export function pinCompany(company: string, pinned: boolean): Promise<{ success:
   });
 }
 
-export function updateInterview(id: string, company: string, position: string, url?: string): Promise<Interview> {
+export function updateInterview(id: string, company: string, position: string, url?: string, stages?: StageDefinition[]): Promise<Interview> {
   return request<Interview>(`${BASE}/interviews/${id}`, {
     method: 'PATCH',
-    body: JSON.stringify({ company, position, url })
+    body: JSON.stringify({ company, position, url, stages })
   });
 }
 

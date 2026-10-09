@@ -36,7 +36,7 @@
             <option value="company">按公司名</option>
             <option value="recentVisit">最近访问</option>
           </select>
-          <button class="btn btn-primary" @click="showAddModal = true">+ 添加面试</button>
+          <button class="btn btn-primary" @click="openAddModal">+ 添加面试</button>
           <button class="btn btn-secondary" @click="handleExport">导出</button>
           <label class="btn btn-secondary">
             导入
@@ -122,14 +122,13 @@
             <div class="card-timeline scrollbar-thin">
               <div
                 v-for="(stage, i) in item.stages"
-                :key="i"
+                :key="stage.id || i"
                 class="timeline-node"
-                :class="[`status-${stage.status}`, { clickable: stage.status !== 'pending' }]"
+                :class="[`status-${stage.status}`, { clickable: isStageActionable(stage) }]"
                 @click="openStageMenu(item.id, i, $event)"
-                @contextmenu="openStageMenu(item.id, i, $event)"
               >
                 <div class="node-dot"></div>
-                <div class="node-label">{{ stage.name }}</div>
+                <div class="node-label" :title="stage.name">{{ stage.name }}</div>
               </div>
             </div>
 
@@ -142,49 +141,41 @@
       </div>
     </main>
 
-    <div v-if="showAddModal" class="modal-overlay" @click.self="showAddModal = false">
-      <div class="modal">
-        <h3>添加面试记录</h3>
-        <form @submit.prevent="handleAdd">
-          <div class="form-group">
-            <label>公司名称</label>
-            <input v-model="addForm.company" type="text" required placeholder="例如：腾讯" />
+    <div v-if="recordDialogMode" class="modal-overlay" @click.self="closeRecordDialog">
+      <div class="modal record-modal" role="dialog" aria-modal="true" aria-labelledby="record-dialog-title">
+        <div class="record-modal-header">
+          <div>
+            <h3 id="record-dialog-title">{{ recordDialogMode === 'edit' ? '编辑面试记录' : '添加面试记录' }}</h3>
+            <p>{{ recordDialogMode === 'edit' ? '自由调整岗位信息与所有阶段，已完成的状态随保留阶段保存。' : '记录一个新机会，为这个岗位配置合适的面试流程。' }}</p>
           </div>
-          <div class="form-group">
-            <label>职位名称</label>
-            <input v-model="addForm.position" type="text" required placeholder="例如：前端工程师" />
+          <button type="button" class="record-close" :disabled="savingRecord" aria-label="关闭面试编辑窗口" @click="closeRecordDialog">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <form class="record-form" @submit.prevent="handleSaveRecord">
+          <div class="record-modal-body scrollbar-thin">
+            <div class="record-basic-fields">
+              <div class="form-group">
+                <label for="record-company">公司名称</label>
+                <input id="record-company" v-model="recordForm.company" type="text" required :disabled="savingRecord" placeholder="例如：腾讯" />
+              </div>
+              <div class="form-group">
+                <label for="record-position">职位名称</label>
+                <input id="record-position" v-model="recordForm.position" type="text" required :disabled="savingRecord" placeholder="例如：前端工程师" />
+              </div>
+              <div class="form-group record-url">
+                <label for="record-url">投递记录页面链接 <span class="optional">（选填，可在卡片一键跳转，同公司共用）</span></label>
+                <input id="record-url" v-model="recordForm.url" type="url" :disabled="savingRecord" placeholder="例如：https://jobs.example.com/123" />
+              </div>
+            </div>
+            <StageEditor :key="editTarget?.id || 'new-record'" :initial-stages="recordForm.stages" :editing="recordDialogMode === 'edit'" :disabled="savingRecord" @change="recordForm.stages = $event" />
           </div>
-          <div class="form-group">
-            <label>投递记录页面链接 <span class="optional">（选填，可在卡片一键跳转，同公司共用）</span></label>
-            <input v-model="addForm.url" type="url" placeholder="例如：https://jobs.example.com/123" />
-          </div>
-          <div class="modal-actions">
-            <button type="button" class="btn btn-secondary" @click="showAddModal = false">取消</button>
-            <button type="submit" class="btn btn-primary">添加</button>
-          </div>
-        </form>
-      </div>
-    </div>
-
-    <div v-if="showEditModal" class="modal-overlay" @click.self="showEditModal = false">
-      <div class="modal">
-        <h3>编辑面试记录</h3>
-        <form @submit.prevent="handleEdit">
-          <div class="form-group">
-            <label>公司名称</label>
-            <input v-model="editForm.company" type="text" required />
-          </div>
-          <div class="form-group">
-            <label>职位名称</label>
-            <input v-model="editForm.position" type="text" required />
-          </div>
-          <div class="form-group">
-            <label>投递记录页面链接 <span class="optional">（选填，可在卡片一键跳转，同公司共用）</span></label>
-            <input v-model="editForm.url" type="url" placeholder="例如：https://jobs.example.com/123" />
-          </div>
-          <div class="modal-actions">
-            <button type="button" class="btn btn-secondary" @click="showEditModal = false">取消</button>
-            <button type="submit" class="btn btn-primary">保存</button>
+          <div class="record-modal-footer">
+            <span class="record-save-hint">流程仅用于当前岗位</span>
+            <div class="record-footer-actions">
+              <button type="button" class="btn btn-secondary" :disabled="savingRecord" @click="closeRecordDialog">取消</button>
+              <button type="submit" class="btn btn-primary" :disabled="savingRecord || !!recordStageError">{{ savingRecord ? '保存中…' : recordDialogMode === 'edit' ? '保存修改' : '添加面试' }}</button>
+            </div>
           </div>
         </form>
       </div>
@@ -201,23 +192,12 @@
       </div>
     </div>
 
-    <div v-if="stageCorrection" class="modal-overlay" @click.self="stageCorrection = null">
-      <div class="modal modal-small" role="alertdialog" aria-modal="true" aria-labelledby="stage-correction-title">
-        <h3 id="stage-correction-title">确认更正阶段</h3>
-        <p>确定要更正 {{ stageCorrection.company }} 的 {{ stageCorrection.position }} 中「{{ stageCorrection.stageName }}」阶段吗？后续所有阶段将重置为待进行，已记录的结果也会清除。</p>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-secondary" @click="stageCorrection = null">取消</button>
-          <button type="button" class="btn btn-danger" @click="confirmStageCorrection">确认更正</button>
-        </div>
-      </div>
-    </div>
-
     <div v-if="stageMenu.visible" class="stage-menu" :style="{ top: stageMenu.y + 'px', left: stageMenu.x + 'px' }">
-      <button v-if="stageMenu.status !== 'current'" @click="updateStageStatus('current')">恢复进行中</button>
-      <button :disabled="stageMenu.status === 'pass'" @click="updateStageStatus('pass')">通过</button>
-      <button :disabled="stageMenu.status === 'fail'" @click="updateStageStatus('fail')">未通过</button>
-      <button :disabled="stageMenu.status === 'rejected'" @click="updateStageStatus('rejected')">已拒绝</button>
-      <button :disabled="stageMenu.status === 'skip'" @click="updateStageStatus('skip')">跳过</button>
+      <button v-if="stageMenu.canResume" @click="updateStageStatus('current')">恢复进行中</button>
+      <button @click="updateStageStatus('pass')">通过</button>
+      <button @click="updateStageStatus('fail')">未通过</button>
+      <button @click="updateStageStatus('rejected')">已拒绝</button>
+      <button @click="updateStageStatus('skip')">跳过</button>
     </div>
 
     <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.message }}</div>
@@ -227,12 +207,14 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import type { Interview, StageStatus } from '../types';
+import type { Interview, StageDraft } from '../types';
 import { fetchInterviews, createInterview, updateStage, deleteInterview, updateInterview, exportInterviews, importInterviews, visitCompany, pinCompany } from '../api';
 import { filterInterviews, groupByCompany, sortGroups, isInterviewTerminated, isGroupTerminated, type CompanyGroup, type SortMode } from '../utils/grouping';
 import StatsPanel from '../components/StatsPanel.vue';
 import EmptyState from '../components/EmptyState.vue';
 import ThemeToggle from '../components/ThemeToggle.vue';
+import StageEditor from '../components/StageEditor.vue';
+import { createDefaultStageDefinitions, getStageId, getStageType, isStageActionable, validateStageDefinitions } from '../stages';
 
 const router = useRouter();
 const user = ref<any>(null);
@@ -242,20 +224,18 @@ const searchQuery = ref('');
 // 默认按进度排序：每次打开页面都以此为初始排序
 const sortBy = ref<SortMode>('progress');
 
-const showAddModal = ref(false);
-const showEditModal = ref(false);
+const recordDialogMode = ref<'create' | 'edit' | null>(null);
 const showDeleteDialog = ref(false);
 const deleteTarget = ref<Interview | null>(null);
 const editTarget = ref<Interview | null>(null);
 
-const addForm = ref({ company: '', position: '', url: '' });
-const editForm = ref({ company: '', position: '', url: '' });
+const recordForm = ref<{ company: string; position: string; url: string; stages: StageDraft[] }>({
+  company: '', position: '', url: '', stages: createDefaultStageDefinitions()
+});
+const savingRecord = ref(false);
+const recordStageError = computed(() => validateStageDefinitions(recordForm.value.stages));
 
-const stageMenu = ref({ visible: false, x: 0, y: 0, interviewId: '', stageIndex: 0, status: 'current' as StageStatus });
-const stageCorrection = ref<{
-  interviewId: string; stageIndex: number; status: StageStatus;
-  company: string; position: string; stageName: string;
-} | null>(null);
+const stageMenu = ref({ visible: false, x: 0, y: 0, interviewId: '', stageIndex: 0, canResume: false });
 
 const toast = ref({ show: false, message: '', type: 'success' as 'success' | 'error' });
 
@@ -338,59 +318,85 @@ async function loadData() {
   }
 }
 
-// 从公司卡片发起新增：预填公司名与投递记录页链接，避免手打公司名不一致导致无法聚合到同一公司
-function openAddForCompany(group: CompanyGroup) {
-  addForm.value = { company: group.company, position: '', url: group.url || '' };
-  showAddModal.value = true;
+function openAddModal() {
+  if (savingRecord.value) return;
+  // 每次新增都从默认流程开始，取消或添加过的草稿不会影响下一个岗位。
+  recordForm.value = { company: '', position: '', url: '', stages: createDefaultStageDefinitions() };
+  editTarget.value = null;
+  recordDialogMode.value = 'create';
 }
 
-async function handleAdd() {
-  const company = addForm.value.company.trim();
-  try {
-    const newInterview = await createInterview(addForm.value.company, addForm.value.position, addForm.value.url || undefined);
-    interviews.value.unshift(newInterview);
-    showAddModal.value = false;
-    addForm.value = { company: '', position: '', url: '' };
-
-    // 添加即视为一次访问：用户通常正浏览该公司招聘页时录入，公司维度刷新访问时间，
-    // 新卡片立即显示"刚刚访问"而非"未访问"
-    try {
-      const visit = await visitCompany(company);
-      interviews.value = interviews.value.map(i =>
-        i.company.trim() === company ? { ...i, lastVisitedAt: visit.lastVisitedAt } : i
-      );
-    } catch {
-      // 访问标记失败不影响添加结果
-    }
-
-    // 新公司进入排序快照并滚动定位到它的卡片
-    recomputeOrder();
-    scrollToCompany(company);
-    showToast('添加成功');
-  } catch {
-    showToast('添加失败', 'error');
-  }
+// 从公司卡片发起新增：预填公司名与投递记录页链接，避免手打公司名不一致导致无法聚合到同一公司
+function openAddForCompany(group: CompanyGroup) {
+  if (savingRecord.value) return;
+  recordForm.value = { company: group.company, position: '', url: group.url || '', stages: createDefaultStageDefinitions() };
+  editTarget.value = null;
+  recordDialogMode.value = 'create';
 }
 
 function editInterview(item: Interview) {
+  if (savingRecord.value) return;
   editTarget.value = item;
-  editForm.value = { company: item.company, position: item.position, url: item.url || '' };
-  showEditModal.value = true;
+  recordForm.value = {
+    company: item.company, position: item.position, url: item.url || '',
+    stages: item.stages.map((stage, index) => ({
+      id: getStageId(stage, index), name: stage.name, type: getStageType(stage), status: stage.status
+    }))
+  };
+  recordDialogMode.value = 'edit';
 }
 
-async function handleEdit() {
-  if (!editTarget.value) return;
+function closeRecordDialog() {
+  if (savingRecord.value) return;
+  recordDialogMode.value = null;
+  editTarget.value = null;
+}
+
+async function handleSaveRecord() {
+  if (savingRecord.value || !recordDialogMode.value) return;
+  if (recordStageError.value) {
+    showToast(recordStageError.value, 'error');
+    return;
+  }
+  const editing = recordDialogMode.value === 'edit';
+  const target = editTarget.value;
+  if (editing && !target) return;
+  const company = recordForm.value.company.trim();
+  const position = recordForm.value.position.trim();
+  const url = recordForm.value.url.trim() || undefined;
+  const stages = recordForm.value.stages.map(({ id, name, type }) => ({ id, name, type }));
+  savingRecord.value = true;
   try {
-    const updated = await updateInterview(editTarget.value.id, editForm.value.company, editForm.value.position, editForm.value.url || undefined);
-    const idx = interviews.value.findIndex(i => i.id === updated.id);
-    if (idx !== -1) interviews.value[idx] = updated;
-    showEditModal.value = false;
-    // 公司名可能被修改，重算顺序并定位到所属卡片
+    const updated = editing && target
+      ? await updateInterview(target.id, company, position, url, stages)
+      : await createInterview(company, position, url, stages);
+    const index = interviews.value.findIndex(item => item.id === updated.id);
+    if (index === -1) interviews.value.unshift(updated);
+    else interviews.value[index] = updated;
+    recordDialogMode.value = null;
+    editTarget.value = null;
+
+    // 添加即视为一次访问：用户通常正浏览该公司招聘页时录入，公司维度刷新访问时间，
+    // 新卡片立即显示"刚刚访问"而非"未访问"
+    if (!editing) {
+      try {
+        const visit = await visitCompany(company);
+        interviews.value = interviews.value.map(item =>
+          item.company.trim() === company ? { ...item, lastVisitedAt: visit.lastVisitedAt } : item
+        );
+      } catch {
+        // 访问标记失败不影响添加结果。
+      }
+    }
+
+    // 添加或编辑完成后，按新的公司与进度重新排序并定位。
     recomputeOrder();
-    scrollToCompany(updated.company);
-    showToast('修改成功');
-  } catch {
-    showToast('修改失败', 'error');
+    scrollToCompany(company);
+    showToast(editing ? '修改成功' : '添加成功');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '保存失败', 'error');
+  } finally {
+    savingRecord.value = false;
   }
 }
 
@@ -413,57 +419,30 @@ async function handleDelete() {
 
 function openStageMenu(interviewId: string, stageIndex: number, event: MouseEvent) {
   const stage = interviews.value.find(item => item.id === interviewId)?.stages[stageIndex];
-  if (!stage || stage.status === 'pending') return;
+  if (!stage || !isStageActionable(stage)) return;
 
-  // 左右键共用菜单，待进行节点继续保留浏览器原有的右键行为。
-  event.preventDefault();
   // 阻止冒泡：否则同一点击会立即传到 document 上的关闭监听，菜单开了又关，表现为点击无效
   event.stopPropagation();
-  // 历史节点多一项恢复操作，定位时预留相应高度和视口边距。
-  const MENU_H = stage.status === 'current' ? 170 : 210;
+  const canResume = stage.status !== 'current';
+  // 失败或拒绝的节点多一项恢复操作，定位时计入增加的菜单高度。
+  const MENU_H = canResume ? 210 : 170;
   const MENU_W = 110;
   const flipUp = event.clientY + MENU_H > window.innerHeight;
   const flipLeft = event.clientX + MENU_W > window.innerWidth;
   stageMenu.value = {
     visible: true,
-    x: Math.max(8, Math.min(flipLeft ? event.clientX - MENU_W : event.clientX, window.innerWidth - MENU_W - 8)),
-    y: Math.max(8, Math.min(flipUp ? event.clientY - MENU_H : event.clientY, window.innerHeight - MENU_H - 8)),
+    x: flipLeft ? event.clientX - MENU_W : event.clientX,
+    y: flipUp ? event.clientY - MENU_H : event.clientY,
     interviewId,
     stageIndex,
-    status: stage.status
+    canResume
   };
 }
 
-async function updateStageStatus(status: StageStatus) {
+async function updateStageStatus(status: string) {
   const { interviewId, stageIndex } = stageMenu.value;
   stageMenu.value.visible = false;
 
-  const interview = interviews.value.find(item => item.id === interviewId);
-  const stage = interview?.stages[stageIndex];
-  if (!interview || !stage || stage.status === 'pending' || stage.status === status) return;
-
-  const hasLaterResults = interview.stages.slice(stageIndex + 1)
-    .some(s => s.status !== 'pending' && s.status !== 'current');
-  if (stage.status !== 'current' && hasLaterResults) {
-    stageCorrection.value = {
-      interviewId, stageIndex, status,
-      company: interview.company, position: interview.position, stageName: stage.name
-    };
-    return;
-  }
-
-  await saveStageStatus(interviewId, stageIndex, status);
-}
-
-async function confirmStageCorrection() {
-  const correction = stageCorrection.value;
-  if (!correction) return;
-  // 先关闭确认层，再提交已经选定的记录，避免连续点击重复发送更正请求。
-  stageCorrection.value = null;
-  await saveStageStatus(correction.interviewId, correction.stageIndex, correction.status);
-}
-
-async function saveStageStatus(interviewId: string, stageIndex: number, status: StageStatus) {
   try {
     const updated = await updateStage(interviewId, stageIndex, status);
     const idx = interviews.value.findIndex(i => i.id === interviewId);
@@ -1243,6 +1222,60 @@ onUnmounted(() => {
   color: var(--color-text);
 }
 
+.record-modal {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  width: calc(100% - 32px);
+  max-width: 760px;
+  max-height: calc(100dvh - 40px);
+  overflow: hidden;
+}
+
+.record-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
+  padding: 24px 28px 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.record-modal .record-modal-header h3 { margin: 0; font-size: 20px; letter-spacing: -0.02em; }
+.record-modal-header p { margin-top: 7px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
+.record-close { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; color: var(--color-text-tertiary); border-radius: var(--radius-sm); }
+.record-close:hover:not(:disabled) { color: var(--color-ink); background: var(--color-bg); }
+
+.record-form { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.record-modal-body {
+  min-height: 0;
+  padding: 20px 28px;
+  overflow-y: auto;
+}
+
+.record-basic-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.record-modal .record-basic-fields .form-group { margin-bottom: 0; }
+.record-url { grid-column: 1 / -1; }
+.record-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
+  padding: 16px 28px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+.record-save-hint { color: var(--color-text-tertiary); font-size: 11px; }
+.record-footer-actions { display: flex; align-items: center; gap: 8px; }
+
 .modal-small p {
   color: var(--color-text-secondary);
   font-size: 14px;
@@ -1314,12 +1347,7 @@ onUnmounted(() => {
   transition: background var(--duration-fast) var(--ease-out);
 }
 
-.stage-menu button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.stage-menu button:not(:disabled):hover {
+.stage-menu button:hover {
   background: var(--color-bg);
 }
 
@@ -1361,6 +1389,13 @@ onUnmounted(() => {
     gap: 10px;
     margin-left: auto;
   }
+
+  .record-modal { width: calc(100% - 24px); max-height: calc(100dvh - 24px); }
+  .record-basic-fields { grid-template-columns: minmax(0, 1fr); }
+  .record-modal-header { padding: 20px 18px 16px; }
+  .record-modal-body { padding: 16px 18px; }
+  .record-modal-footer { padding: 14px 18px; gap: 8px; }
+  .record-save-hint { max-width: 70px; line-height: 1.5; }
 
   .toolbar {
     flex-direction: column;

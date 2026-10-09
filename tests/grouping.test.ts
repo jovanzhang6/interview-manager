@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterInterviews, groupByCompany, sortGroups, isGroupTerminated } from '../src/utils/grouping';
+import { filterInterviews, groupByCompany, sortGroups, isGroupTerminated, isInterviewTerminated } from '../src/utils/grouping';
 import type { Interview } from '../src/types';
 
 function makeStages(passed: number, currentAt: number): Interview['stages'] {
@@ -18,6 +18,35 @@ function makeItem(overrides: Partial<Interview> & { id: string; company: string;
     ...overrides
   } as Interview;
 }
+
+describe('自定义流程的分组与排序', () => {
+  it('阶段数不同的岗位和公司按完成比例排序', () => {
+    const short = makeItem({ id: '短', company: '短流程公司', position: '短流程', stages: [
+      { name: '投递', status: 'pass' }, { name: '面试', type: 'interview', status: 'current' }
+    ] });
+    const long = makeItem({ id: '长', company: '长流程公司', position: '长流程', stages: makeStages(4, 4) });
+    expect(sortGroups(groupByCompany([long, short]), 'progress').map(group => group.company))
+      .toEqual(['短流程公司', '长流程公司']);
+    expect(groupByCompany([long, { ...short, company: long.company }])[0].items.map(item => item.id)).toEqual(['短', '长']);
+  });
+
+  it('最后一个面试通过不作为录用，已有失败仍判定终结', () => {
+    const item = makeItem({ id: '失败', company: '公司', position: '岗位', stages: [
+      { name: '筛选', type: 'other', status: 'fail' },
+      { name: '面试', type: 'interview', status: 'pass' }
+    ] });
+    expect(isInterviewTerminated(item)).toBe(true);
+  });
+
+  it('录用阶段不在最后时仍正确识别，旧十阶段同样兼容', () => {
+    const item = makeItem({ id: '录用', company: '公司', position: '岗位', stages: [
+      { name: '意向书', type: 'offer', status: 'pass' },
+      { name: '材料核验', type: 'other', status: 'fail' }
+    ] });
+    expect(isInterviewTerminated(item)).toBe(false);
+    expect(isInterviewTerminated(makeItem({ id: '旧', company: '公司', position: '旧岗位', stages: offerStages() }))).toBe(false);
+  });
+});
 
 describe('filterInterviews 搜索过滤', () => {
   const data: Interview[] = [
@@ -73,7 +102,7 @@ describe('groupByCompany 公司聚合', () => {
       makeItem({ id: '1', company: '腾讯', position: 'a', stages: makeStages(1, 1) }),
       makeItem({ id: '2', company: '腾讯', position: 'b', stages: makeStages(4, 4) })
     ]);
-    expect(groups[0].maxProgress).toBe(4);
+    expect(groups[0].maxProgress).toBe(0.4);
   });
 
   it('latestVisit 取组内最新访问时间', () => {
@@ -156,7 +185,7 @@ function failedStages(passed: number): Interview['stages'] {
 }
 
 function offerStages(): Interview['stages'] {
-  return Array.from({ length: 10 }, (_, i) => ({ name: `阶段${i}`, status: 'pass' }));
+  return Array.from({ length: 10 }, (_, i) => ({ name: i === 9 ? '正式offer' : `阶段${i}`, status: 'pass' }));
 }
 
 describe('已挂记录：公司聚合口径', () => {
@@ -166,7 +195,7 @@ describe('已挂记录：公司聚合口径', () => {
       makeItem({ id: '2', company: '腾讯', position: '活着的', createdAt: '2026-09-02', stages: makeStages(1, 1) })
     ]);
     // 挂了的岗位进度 3 不计入，公司进度取活着的 1
-    expect(groups[0].maxProgress).toBe(1);
+    expect(groups[0].maxProgress).toBe(0.1);
   });
 
   it('拿到 offer 的记录不算挂，正常参与公司进度', () => {
@@ -174,7 +203,7 @@ describe('已挂记录：公司聚合口径', () => {
       makeItem({ id: '1', company: '腾讯', position: '有offer', stages: offerStages() }),
       makeItem({ id: '2', company: '腾讯', position: '挂了的', stages: failedStages(5) })
     ]);
-    expect(groups[0].maxProgress).toBe(10);
+    expect(groups[0].maxProgress).toBe(1);
   });
 
   it('全公司都挂了时进度取真实最大值（仅用于全挂公司之间的相对排序）', () => {
@@ -182,7 +211,7 @@ describe('已挂记录：公司聚合口径', () => {
       makeItem({ id: '1', company: '腾讯', position: 'a', stages: failedStages(2) }),
       makeItem({ id: '2', company: '腾讯', position: 'b', stages: failedStages(6) })
     ]);
-    expect(groups[0].maxProgress).toBe(6);
+    expect(groups[0].maxProgress).toBe(0.6);
   });
 
   it('组内排序：未挂的按进度降序在前，挂了的沉到最后', () => {
