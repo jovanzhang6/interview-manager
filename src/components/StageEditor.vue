@@ -471,7 +471,10 @@ h4 span {
   border: 1px solid var(--color-border-strong);
   border-left: 3px solid var(--stage-color);
   border-radius: var(--radius-md);
-  background: var(--color-surface-solid);
+  /* 实底垫色保证不透明，类别软底叠在其上，与原行观感一致 */
+  background:
+    linear-gradient(var(--color-surface-solid), var(--color-surface-solid)),
+    var(--stage-bg);
   box-shadow: 0 8px 24px rgba(28, 25, 23, 0.22);
   will-change: transform;
   pointer-events: none;
