@@ -210,16 +210,26 @@ if (!d || event.pointerId !== d.pointerId) return;
 }
 
 let scrollFrame = 0;
-function autoScrollNearEdge(clientY: number) {
+function autoScrollNearEdge(d: DragState, clientY: number) {
   cancelAnimationFrame(scrollFrame);
   scrollFrame = requestAnimationFrame(() => {
-    const d = drag.value;
-    if (!d?.active || !d.scrollContainer) return;
+    if (drag.value !== d || !d.active || !d.scrollContainer) return;
     const rect = d.scrollContainer.getBoundingClientRect();
-    const EDGE = 48;
-    if (clientY < rect.top + EDGE) d.scrollContainer.scrollTop -= 14;
-    else if (clientY > rect.bottom - EDGE) d.scrollContainer.scrollTop += 14;
-    if (drag.value?.active) autoScrollNearEdge(clientY);
+    const EDGE = 56;
+    let speed = 0;
+    if (clientY < rect.top + EDGE) {
+      // 越贴近边缘滚动越快
+      const depth = Math.min(1, (rect.top + EDGE - clientY) / EDGE);
+      speed = -(5 + depth * 24);
+    } else if (clientY > rect.bottom - EDGE) {
+      const depth = Math.min(1, (clientY - (rect.bottom - EDGE)) / EDGE);
+      speed = 5 + depth * 24;
+    }
+    if (!speed) return;
+    d.scrollContainer.scrollTop += speed;
+    // 关键：列表滚动后行会滑过指针，落点必须跟着滚动重算，否则插入位置会冻结在旧值
+    recalcDropTarget(d, clientY);
+    autoScrollNearEdge(d, clientY);
   });
 }
 
