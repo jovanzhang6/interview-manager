@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createDefaultStageDefinitions, createStages, getStageType, hasEnteredInterview,
+  computeDropIndex, computeShifts, createDefaultStageDefinitions, createStages, getStageType, hasEnteredInterview,
   hasOffer, getStageId, mergeStageDefinitions, MAX_STAGE_COUNT, MAX_STAGE_NAME_LENGTH, stageProgress, validateStageDefinitions
 } from '../src/stages';
 
@@ -138,5 +138,44 @@ describe('自定义阶段的统计语义', () => {
       { name: '录用通知', status: 'pending' }
     ])).toBe(0.5);
     expect(stageProgress([])).toBe(0);
+  });
+});
+
+describe('拖拽排序的几何计算', () => {
+  const rows = [
+    { top: 0, height: 50 }, { top: 59, height: 50 }, { top: 118, height: 50 },
+    { top: 177, height: 50 }, { top: 236, height: 50 }
+  ];
+
+  it('指针在某行中点上方时插入到该行之前', () => {
+    // 各行中点：R0=25, R1=84, R2=143, R3=202, R4=261
+    expect(computeDropIndex(60, rows, 0)).toBe(0);  // R1 上半：插回原位
+    expect(computeDropIndex(120, rows, 0)).toBe(1); // R2 上半：插到 R1 之后
+    expect(computeDropIndex(200, rows, 0)).toBe(2); // R3 上半：插到 R2 之后
+  });
+
+  it('指针在某行中点下方时插入到该行之后', () => {
+    expect(computeDropIndex(100, rows, 0)).toBe(1); // R1 下半越过，落在 R2 之前
+    expect(computeDropIndex(170, rows, 0)).toBe(2); // R2 下半越过，落在 R3 之前
+    expect(computeDropIndex(270, rows, 0)).toBe(4); // 末行下半：落到末尾
+  });
+
+  it('拖过自身中点不改变位置，拖到末行之后落在末尾', () => {
+    expect(computeDropIndex(10, rows, 2)).toBe(0);  // R0 上半：插到最前
+    expect(computeDropIndex(60, rows, 2)).toBe(1);  // R0 下半：插到 R0 之后
+    expect(computeDropIndex(400, rows, 2)).toBe(4);
+    expect(computeDropIndex(400, rows, 4)).toBe(4);
+  });
+
+  it('上移插入时中间行整体下移让位', () => {
+    expect(computeShifts(3, 0, 5, 59)).toEqual([59, 59, 59, null, null]);
+  });
+
+  it('下移插入时中间行整体上移让位', () => {
+    expect(computeShifts(0, 3, 5, 59)).toEqual([null, -59, -59, -59, null]);
+  });
+
+  it('落点与起点相同时所有行都不动', () => {
+    expect(computeShifts(2, 2, 5, 59)).toEqual([null, null, null, null, null]);
   });
 });

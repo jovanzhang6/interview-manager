@@ -15,24 +15,22 @@
       <span v-for="type in STAGE_TYPES" :key="type" :class="`type-${type}`"><i aria-hidden="true"></i>{{ STAGE_TYPE_LABELS[type] }}</span>
     </div>
 
-    <ol class="stage-list">
+    <ol class="stage-list" ref="listEl">
       <li
         v-for="(entry, index) in entries"
         :key="entry.key"
+        :ref="el => setRowRef(entry.key, el)"
         class="stage-row"
-        :class="[`type-${entry.type}`, { dragging: draggedKey === entry.key, 'drop-target': draggedKey !== null && dropKey === entry.key && draggedKey !== entry.key }]"
-        @dragover="onDragOver(entry.key, $event)"
-        @drop.prevent="dropStage(entry.key)"
+        :class="[`type-${entry.type}`, { 'drag-ghost': drag && drag.active && drag.key === entry.key }]"
+        :data-stage-key="entry.key"
       >
         <button
           type="button"
           class="drag-handle"
-          :draggable="!disabled"
           :disabled="disabled"
           :aria-label="`拖动第${index + 1}个阶段调整顺序`"
           title="拖动调整顺序"
-          @dragstart="startDrag(entry.key, $event)"
-          @dragend="endDrag"
+          @pointerdown="onDragPointerDown(entry.key, $event)"
         >
           <svg width="16" height="20" viewBox="0 0 16 20" fill="currentColor" aria-hidden="true">
             <circle cx="5" cy="4" r="1.5" /><circle cx="11" cy="4" r="1.5" />
@@ -79,12 +77,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { v4 as uuidv4 } from 'uuid';
 import StageTypeSelect from './StageTypeSelect.vue';
 import {
-  createDefaultStageDefinitions, MAX_STAGE_COUNT, MAX_STAGE_NAME_LENGTH,
-  getStageId, isHistoryStage, STAGE_TYPES, STAGE_TYPE_LABELS, STAGE_STATUS_LABELS,
+  computeDropIndex, computeShifts, createDefaultStageDefinitions, getStageId, MAX_STAGE_COUNT, MAX_STAGE_NAME_LENGTH,
+  isHistoryStage, STAGE_TYPES, STAGE_TYPE_LABELS, STAGE_STATUS_LABELS,
   validateStageDefinitions, type StageDraft
 } from '../stages';
 
@@ -99,15 +97,163 @@ function makeEntries(stages: StageDraft[]) {
 // 表单内使用独立草稿和稳定标识，移动阶段时保留各阶段的输入内容。
 const initialEntries = makeEntries(props.initialStages);
 const entries = ref(initialEntries.map(entry => ({ ...entry })));
+const listEl = ref<HTMLElement | null>(null);
 const editorRoot = ref<HTMLElement | null>(null);
-const draggedKey = ref<number | null>(null);
-const dropKey = ref<number | null>(null);
 const announcement = ref('');
 const validationError = computed(() => validateStageDefinitions(entries.value));
 
 watch(entries, value => {
   emit('change', value.map(({ id, name, type, status }) => ({ id, name, type, status })));
 }, { deep: true, flush: 'sync' });
+
+// ===== 指针拖拽：行实体跟手，原位显示占位槽，其余行平滑让位 =====
+interface DragState {
+  key: number; from: number; to: number;
+  rowEl: HTMLElement;
+  pointerId: number; startX: number; startY: number;
+  grabDX: number; grabDY: number;
+  width: number; height: number;
+  active: boolean;
+  clone: HTMLElement | null;
+  scrollContainer: HTMLElement | null;
+}
+const drag = ref<DragState | null>(null);
+const rowEls = new Map<number, HTMLElement>();
+const SLOT_GAP = 9;
+
+function setRowRef(key: number, el: unknown) {
+  if (el) rowEls.set(key, el as HTMLElement);
+  else rowEls.delete(key);
+}
+
+function onDragPointerDown(key: number, event: PointerEvent) {
+  if (props.disabled || (event.pointerType === 'mouse' && event.button !== 0)) return;
+  const rowEl = (event.currentTarget as HTMLElement).closest('.stage-row') as HTMLElement;
+  if (!rowEl) return;
+  const rect = rowEl.getBoundingClientRect();
+  drag.value = {
+    key,
+    from: entries.value.findIndex(entry => entry.key === key),
+    rowEl,
+    to: -1,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    grabDX: event.clientX - rect.left,
+    grabDY: event.clientY - rect.top,
+    width: rect.width,
+    height: rect.height,
+    active: false,
+    clone: null,
+    scrollContainer: rowEl.closest('.record-modal-body')
+  };
+  window.addEventListener('pointermove', onDragPointerMove);
+  window.addEventListener('pointerup', onDragPointerUp);
+  window.addEventListener('keydown', onDragKeyDown);
+}
+
+function activateDrag(d: DragState, event: PointerEvent) {
+d.active = true;
+  // 克隆行实体跟手，原行变为虚线占位槽
+  const clone = d.rowEl ? (d.rowEl.cloneNode(true) as HTMLElement) : null;
+  if (!clone) return;
+  clone.classList.add('stage-clone');
+  clone.classList.remove('drag-ghost');
+  clone.style.width = `${d.width}px`;
+  clone.style.height = `${d.height}px`;
+  clone.style.left = `${event.clientX - d.grabDX}px`;
+  clone.style.top = `${event.clientY - d.grabDY}px`;
+  document.body.appendChild(clone);
+  d.clone = clone;
+  d.rowEl.classList.add('drag-ghost');
+  document.body.classList.add('dragging-stages');
+  announcement.value = '正在拖动阶段，松开完成排序，按 Esc 取消';
+}
+
+function onDragPointerMove(event: PointerEvent) {
+  const d = drag.value;
+if (!d || event.pointerId !== d.pointerId) return;
+  if (!d.active) {
+    if (Math.hypot(event.clientX - d.startX, event.clientY - d.startY) < 5) return;
+    activateDrag(d, event);
+  }
+  if (d.clone) {
+    d.clone.style.left = `${event.clientX - d.grabDX}px`;
+    d.clone.style.top = `${event.clientY - d.grabDY}px`;
+  }
+  // 计算落点并让其他行平滑让位
+  const rows = entries.value.map(entry => {
+    const el = rowEls.get(entry.key)!;
+    const r = el.getBoundingClientRect();
+    return { top: r.top, height: r.height };
+  });
+  const to = computeDropIndex(event.clientY, rows, d.from);
+  if (to !== d.to) {
+    d.to = to;
+    const shifts = computeShifts(d.from, to, entries.value.length, d.height + SLOT_GAP);
+    entries.value.forEach((entry, i) => {
+      const el = rowEls.get(entry.key);
+      if (el) el.style.transform = shifts[i] ? `translateY(${shifts[i]}px)` : '';
+    });
+  }
+  autoScrollNearEdge(event.clientY);
+}
+
+let scrollFrame = 0;
+function autoScrollNearEdge(clientY: number) {
+  cancelAnimationFrame(scrollFrame);
+  scrollFrame = requestAnimationFrame(() => {
+    const d = drag.value;
+    if (!d?.active || !d.scrollContainer) return;
+    const rect = d.scrollContainer.getBoundingClientRect();
+    const EDGE = 48;
+    if (clientY < rect.top + EDGE) d.scrollContainer.scrollTop -= 14;
+    else if (clientY > rect.bottom - EDGE) d.scrollContainer.scrollTop += 14;
+    if (drag.value?.active) autoScrollNearEdge(clientY);
+  });
+}
+
+function onDragPointerUp(event: PointerEvent) {
+const d = drag.value;
+  if (!d || event.pointerId !== d.pointerId) return;
+  finishDrag(d);
+}
+
+function onDragKeyDown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && drag.value?.active) {
+    drag.value.to = -1;
+    finishDrag(drag.value, true);
+  }
+}
+
+function finishDrag(d: DragState, cancelled = false) {
+  window.removeEventListener('pointermove', onDragPointerMove);
+  window.removeEventListener('pointerup', onDragPointerUp);
+  window.removeEventListener('keydown', onDragKeyDown);
+  cancelAnimationFrame(scrollFrame);
+  d.clone?.remove();
+  document.body.classList.remove('dragging-stages');
+  entries.value.forEach(entry => {
+    const el = rowEls.get(entry.key);
+    if (el) el.style.transform = '';
+  });
+  d.rowEl.classList.remove('drag-ghost');
+  if (!cancelled && d.active && d.to !== -1 && d.to !== d.from) {
+    moveStage(d.from, d.to);
+  } else if (cancelled) {
+    announcement.value = '已取消拖动';
+  }
+  drag.value = null;
+}
+
+onUnmounted(() => {
+  window.removeEventListener('pointermove', onDragPointerMove);
+  window.removeEventListener('pointerup', onDragPointerUp);
+  window.removeEventListener('keydown', onDragKeyDown);
+  cancelAnimationFrame(scrollFrame);
+  drag.value?.clone?.remove();
+  document.body.classList.remove('dragging-stages');
+});
 
 function canMove(from: number, to: number) {
   return !props.disabled && from !== to && from >= 0 && from < entries.value.length && to >= 0 && to < entries.value.length;
@@ -142,7 +288,6 @@ function removeStage(index: number) {
 
 function restoreDefaults() {
   if (props.disabled) return;
-  endDrag();
   if (!props.editing) {
     entries.value = makeEntries(createDefaultStageDefinitions());
   } else {
@@ -164,36 +309,6 @@ function restoreDefaults() {
     entries.value = [...history, ...remaining];
   }
   announcement.value = props.editing ? '已保留历史进度并重置未完成阶段' : '已恢复默认十阶段流程';
-}
-
-function startDrag(key: number, event: DragEvent) {
-  const entry = entries.value.find(stage => stage.key === key);
-  if (props.disabled || !entry || !event.dataTransfer) return;
-  draggedKey.value = key;
-  event.dataTransfer.effectAllowed = 'move';
-  event.dataTransfer.setData('text/plain', String(key));
-  const row = (event.currentTarget as HTMLElement).closest('.stage-row');
-  if (row) event.dataTransfer.setDragImage(row, 16, 16);
-}
-
-function onDragOver(key: number, event: DragEvent) {
-  if (props.disabled || draggedKey.value === null) return;
-  event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-  dropKey.value = key;
-}
-
-function dropStage(key: number) {
-  if (draggedKey.value === null) return;
-  const from = entries.value.findIndex(entry => entry.key === draggedKey.value);
-  const to = entries.value.findIndex(entry => entry.key === key);
-  if (from !== -1 && to !== -1) moveStage(from, to);
-  endDrag();
-}
-
-function endDrag() {
-  draggedKey.value = null;
-  dropKey.value = null;
 }
 </script>
 
@@ -277,11 +392,42 @@ h4 span {
   border-radius: var(--radius-md);
   background: var(--stage-bg);
   box-shadow: var(--shadow-sm);
-  transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
+  transition: transform 160ms var(--ease-out), border-color var(--duration-fast), box-shadow 160ms var(--ease-out);
 }
 
-.stage-row.dragging { opacity: 0.45; }
-.stage-row.drop-target { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+/* 被拖行的原位占位槽：虚线框提示落点区域 */
+.stage-row.drag-ghost {
+  border-style: dashed;
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: none;
+}
+
+.stage-row.drag-ghost > * { visibility: hidden; }
+
+/* 跟手的行实体：微倾斜加投影，营造拿起的感觉；层级压过弹窗（1000）与轻提示（2000） */
+.stage-clone {
+  position: fixed;
+  z-index: 4000;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 8px;
+  border: 1px solid var(--color-border-strong);
+  border-left: 3px solid var(--stage-color);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-solid);
+  box-shadow: 0 16px 40px rgba(28, 25, 23, 0.30), 0 2px 8px rgba(28, 25, 23, 0.18);
+  transform: rotate(1.2deg) scale(1.01);
+  pointer-events: none;
+  cursor: grabbing;
+}
+
+.stage-clone .stage-number { font-family: var(--font-mono); font-size: 12px; text-align: center; }
+
+body.dragging-stages { user-select: none; }
+body.dragging-stages * { cursor: grabbing !important; }
 
 .drag-handle {
   display: flex;
@@ -292,8 +438,10 @@ h4 span {
   color: var(--color-text-tertiary);
   font-size: 22px;
   cursor: grab;
+  touch-action: none;
 }
 
+.drag-handle:hover { color: var(--color-text-secondary); }
 .drag-handle:active { cursor: grabbing; }
 .stage-number { width: 22px; flex-shrink: 0; color: var(--stage-color); font-family: var(--font-mono); font-size: 12px; text-align: center; }
 

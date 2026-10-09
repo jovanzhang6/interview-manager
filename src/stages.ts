@@ -142,3 +142,40 @@ export function stageProgress(stages: readonly Stage[]): number {
   if (stages.length === 0) return 0;
   return stages.filter(stage => stage.status === 'pass' || stage.status === 'skip').length / stages.length;
 }
+
+/** 拖拽排序：按指针纵坐标计算落点插入位置（与 splice 语义对齐，移除 from 后插入 to）。 */
+export function computeDropIndex(
+  pointerY: number,
+  rows: readonly { top: number; height: number }[],
+  from: number
+): number {
+  let to = from;
+  for (let i = 0; i < rows.length; i++) {
+    if (i === from) continue;
+    const mid = rows[i].top + rows[i].height / 2;
+    if (pointerY < mid) {
+      to = i > from ? i - 1 : i;
+      return to;
+    }
+  }
+  // 越过所有行中点：落到末尾
+  to = rows.length - 1;
+  return to;
+}
+
+/** 拖拽排序：计算让位位移矩阵，null 表示该行不动（单位像素，正值为下移）。 */
+export function computeShifts(
+  from: number,
+  to: number,
+  count: number,
+  slotHeight: number
+): (number | null)[] {
+  const shifts: (number | null)[] = Array.from({ length: count }, () => null);
+  if (to === from) return shifts;
+  for (let i = 0; i < count; i++) {
+    if (i === from) continue;
+    if (to < from && i >= to && i < from) shifts[i] = slotHeight;
+    else if (to > from && i > from && i <= to) shifts[i] = -slotHeight;
+  }
+  return shifts;
+}

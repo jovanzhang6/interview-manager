@@ -60,18 +60,20 @@ describe('StageEditor 流程编辑器（创建模式）', () => {
     expect(wrapper.find('[aria-label="下移第10个阶段"]').attributes('disabled')).toBeDefined();
   });
 
-  it('拖拽手柄可以把阶段拖到目标位置，顺序与标识一致', async () => {
+  it('指针拖拽：未超过移动阈值就松手不触发重排', async () => {
     const wrapper = mountEditor(createDefaultTen());
-    const rows = wrapper.findAll('.stage-row');
-    const dataTransfer = makeDataTransfer();
-    await rows[0].find('.drag-handle').trigger('dragstart', { dataTransfer });
-    await rows[2].trigger('dragover', { dataTransfer });
-    await rows[2].trigger('drop', { dataTransfer });
-    expect(namesOf(wrapper)[2]).toBe('投递');
-    expect(namesOf(wrapper)[0]).toBe('测评');
-    const change = lastChange(wrapper);
-    expect(change[2].id).toBe('stage-投递');
-    expect(change.map(stage => stage.name)).toEqual(['测评', '笔试', '投递', '简历评估', '一面', '二面', '三面', 'HR面', 'Offer评估', '正式offer']);
+    const handle = wrapper.find('[aria-label="拖动第1个阶段调整顺序"]');
+    const fire = (type: string, clientX: number, clientY: number) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
+      Object.assign(event, { pointerId: 1, pointerType: 'mouse' });
+      handle.element.dispatchEvent(event);
+    };
+    fire('pointerdown', 10, 10);
+    fire('pointermove', 12, 11); // 移动 5px 阈值以内
+    fire('pointerup', 12, 11);
+    await wrapper.vm.$nextTick();
+    // 未激活拖拽，顺序不变
+    expect(namesOf(wrapper)[0]).toBe('投递');
   });
 
   it('删除阶段后 change 同步减少，删至空流程时展示校验错误', async () => {
